@@ -18,12 +18,16 @@ This project trains a gradient-boosted model on recent NCAA Division I seasons (
 - **Goal**: Predict win probabilities for NCAA tournament matchups and use them to fill 2026 men’s and women’s brackets.
 - **Inputs / features** (per team and season):
   - Aggregated, **recency-weighted** box-score stats from `*RegularSeasonDetailedResults.csv` (offense and defense), where late-season games receive higher weight to capture momentum.
+  - Possession-based efficiency and rate metrics computed from regular-season games, such as:
+    - offensive and defensive rating (points scored/allowed per 100 possessions),
+    - turnover rate, offensive rebound rate, and three-point attempt rate.
+  - Opponent-strength summaries (schedule strength) based on the efficiency of each team’s regular-season opponents.
   - Seed information from `*NCAATourneySeeds.csv` (seed difference between teams).
   - For men, extra ranking features from `MRankings.csv`.
 - **Training setup**:
   - Builds paired rows from historical tournament games: winner vs loser and loser vs winner.
   - Uses feature differences (Team1 − Team2) plus seed difference as the input vector.
-  - Trains on recent seasons, with heavier weights on the most recent years (season-level) and more emphasis on late-season games within each season (game-level momentum).
+  - Trains on recent seasons, with heavier weights on the most recent years and more emphasis on late-season games within each season (game-level momentum).
 - **Calibration and predictions**:
   - Calibrates raw gradient-boosting probabilities with isotonic regression on a held-out season.
   - For a target season (e.g., 2026), scores all team pairs and writes:

@@ -30,6 +30,7 @@ def _season_feature_snapshot(which: str, season: int, recency_decay: float = 0.9
     - offensive and defensive rating (points per 100 possessions)
     - turnover rate, offensive rebound rate, three-point attempt rate
     - win rate and average margin
+    - opponent-strength summaries derived from opponents' efficiency profiles
 
     Late-season momentum is modeled by exponentially down-weighting earlier
     regular-season games using the provided recency_decay parameter.
@@ -201,6 +202,32 @@ def _season_feature_snapshot(which: str, season: int, recency_decay: float = 0.9
     sum_weight = games.groupby("TeamID")["_weight"].sum()
     sum_xw = weighted.groupby(games["TeamID"]).sum()
     feats = sum_xw.div(sum_weight, axis=0).reset_index()
+
+    # Opponent strength: for each team, compute recency-weighted averages of
+    # opponents' efficiency stats (strength of schedule style features).
+    opp_base = feats[
+        [
+            "TeamID",
+            "OffRating",
+            "DefRating",
+            "Margin",
+            "Win",
+        ]
+    ].rename(
+        columns={
+            "TeamID": "OppID",
+            "OffRating": "OppOffRating",
+            "DefRating": "OppDefRating",
+            "Margin": "OppMargin",
+            "Win": "OppWin",
+        }
+    )
+    games_opp = games.merge(opp_base, on="OppID", how="left")
+    opp_agg_cols = ["OppOffRating", "OppDefRating", "OppMargin", "OppWin"]
+    weighted_opp = games_opp[opp_agg_cols].multiply(games_opp["_weight"], axis=0)
+    sum_xw_opp = weighted_opp.groupby(games_opp["TeamID"]).sum()
+    opp_feats = sum_xw_opp.div(sum_weight, axis=0).reset_index()
+    feats = feats.merge(opp_feats, on="TeamID", how="left")
     feats.insert(1, "Season", season)
 
     # Men only: add ranking snapshot near tourney time if available
