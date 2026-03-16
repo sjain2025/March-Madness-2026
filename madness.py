@@ -154,9 +154,11 @@ class Bracket:
         seedings = seeds_data[seeds_data['Season'] == self.season]
         if len(seedings) == 0:
             # If official seeds for this season are not available in data/,
-            # use known 2026 men's matchups if provided; otherwise fall back.
+            # use known 2026 matchups if provided; otherwise fall back.
             if self.which == 'M' and self.season == 2026:
                 self.seed_2026_mens_espn()
+            elif self.which == 'W' and self.season == 2026:
+                self.seed_2026_womens_espn()
             else:
                 self.seed_synthetic()
             return
@@ -200,6 +202,26 @@ class Bracket:
             "saint marys": "St Mary's CA",
             "saint louis": "St Louis",
             "iowa state": "Iowa St",
+            # Additional abbreviations used in 2026 brackets
+            "w illinois": "W Illinois",
+            "s dakota st": "S Dakota St",
+            "uc san diego": "UC San Diego",
+            "ole miss": "Mississippi",
+            "green bay": "WI Green Bay",
+            "texas tech": "Texas Tech",
+            "west virginia": "West Virginia",
+            "holy cross": "Holy Cross",
+            "most": "Missouri St",
+            "sfa": "SF Austin",
+            "sou": "Southern Univ",
+            "sam": "Samford",
+            "uva": "Virginia",
+            "asu": "Arizona St",
+            "neb": "Nebraska",
+            "rich": "Richmond",
+            "fdu": "F Dickinson",
+            "utsa": "UT San Antonio",
+            "charleston": "Col Charleston",
         }
         n = aliases.get(name.lower(), name)
         teams = self.teams
@@ -332,6 +354,116 @@ class Bracket:
                 tid = remaining.pop(0)
                 resolved[(region, seed)] = tid
                 chosen_ids.add(tid)
+
+        # Seed all non-playin slots
+        for (region, seed), tid in resolved.items():
+            slot = self.get_slot(seed)
+            self.set_predicted(region, 1, slot, tid)
+            self.set_actual(region, 1, slot, tid)
+
+        # Add play-in rows (two teams per (region,seed))
+        for (region, seed), (n1, n2) in playins.items():
+            t1 = self._team_id_from_name(n1)
+            t2 = self._team_id_from_name(n2)
+            for code, tid in zip(["a", "b"], [t1, t2]):
+                self.bracket.loc[len(self.bracket)] = [region, 0, seed, code, tid, tid, None]
+
+    def seed_2026_womens_espn(self):
+        """
+        Seed the 2026 women's bracket from the provided matchups in the prompt.
+
+        Regions mapping used by this code:
+        - W, X, Y, Z: four regions in display order.
+        """
+        R1, R2, R3, R4 = "W", "X", "Y", "Z"
+
+        seeds = {
+            # Region 1
+            (R1, 1): "UConn",
+            (R1, 16): "UTSA",
+            (R1, 8): "Iowa State",
+            (R1, 9): "Syracuse",
+            (R1, 5): "Maryland",
+            (R1, 12): "Murray St",
+            (R1, 4): "North Carolina",
+            (R1, 13): "W Illinois",
+            (R1, 6): "Notre Dame",
+            (R1, 11): "Fairfield",
+            (R1, 3): "Ohio State",
+            (R1, 14): "Howard",
+            (R1, 7): "Illinois",
+            (R1, 10): "Colorado",
+            (R1, 2): "Vanderbilt",
+            (R1, 15): "High Point",
+            # Region 2
+            (R2, 1): "South Carolina",
+            (R2, 16): None,  # play-in SOU/SAM
+            (R2, 8): "Clemson",
+            (R2, 9): "USC",
+            (R2, 5): "Michigan St",
+            (R2, 12): "Colorado St",
+            (R2, 4): "Oklahoma",
+            (R2, 13): "Idaho",
+            (R2, 6): "Washington",
+            (R2, 11): "S Dakota St",
+            (R2, 3): "TCU",
+            (R2, 14): "UC San Diego",
+            (R2, 7): "Georgia",
+            (R2, 10): None,  # play-in UVA/ASU
+            (R2, 2): "Iowa",
+            (R2, 15): "FDU",
+            # Region 3
+            (R3, 1): "UCLA",
+            (R3, 16): "CA Baptist",
+            (R3, 8): "Oklahoma St",
+            (R3, 9): "Princeton",
+            (R3, 5): "Ole Miss",
+            (R3, 12): "Gonzaga",
+            (R3, 4): "Minnesota",
+            (R3, 13): "Green Bay",
+            (R3, 6): "Baylor",
+            (R3, 11): None,  # play-in NEB/RICH
+            (R3, 3): "Duke",
+            (R3, 14): "Charleston",
+            (R3, 7): "Texas Tech",
+            (R3, 10): "Villanova",
+            (R3, 2): "LSU",
+            (R3, 15): "Jacksonville",
+            # Region 4
+            (R4, 1): "Texas",
+            (R4, 16): None,  # play-in MOST/SFA
+            (R4, 8): "Oregon",
+            (R4, 9): "Virginia Tech",
+            (R4, 5): "Kentucky",
+            (R4, 12): "James Madison",
+            (R4, 4): "West Virginia",
+            (R4, 13): "Miami OH",
+            (R4, 6): "Alabama",
+            (R4, 11): "Rhode Island",
+            (R4, 3): "Louisville",
+            (R4, 14): "Vermont",
+            (R4, 7): "NC State",
+            (R4, 10): "Tennessee",
+            (R4, 2): "Michigan",
+            (R4, 15): "Holy Cross",
+        }
+
+        playins = {
+            (R2, 16): ("SOU", "SAM"),
+            (R2, 10): ("UVA", "ASU"),
+            (R3, 11): ("NEB", "RICH"),
+            (R4, 16): ("MOST", "SFA"),
+        }
+
+        # Resolve all explicitly named teams
+        chosen_ids = set()
+        resolved = {}
+        for (region, seed), name in seeds.items():
+            if name is None:
+                continue
+            tid = self._team_id_from_name(name)
+            resolved[(region, seed)] = tid
+            chosen_ids.add(tid)
 
         # Seed all non-playin slots
         for (region, seed), tid in resolved.items():
@@ -588,13 +720,15 @@ if __name__ == "__main__":
         if not os.path.exists(pred_path):
             os.makedirs("predictions", exist_ok=True)
             try:
-                from make_predictions_ml import (
+                from make_predictions import (
                     generate_global_predictions_csv,
                     train_time_series_gb,
                 )
                 season = 2026
-                # Train on last 5 seasons ending at 2025, weighted toward recent
-                bundle = train_time_series_gb(which, train_end_season=2025, train_years=5, recency_decay=0.7)
+                # Train on last 7 seasons ending at 2025 with fixed
+                # season-level weights (0.4, 0.25, 0.15, 0.05, 0.05, 0.05, 0.05)
+                bundle = train_time_series_gb(which, train_end_season=2025, train_years=7)
+                print(f"[{which}] season weights (offsets 0..6, 0=most recent): {bundle.season_weights}")
                 generate_global_predictions_csv(which, bundle, season, pred_path)
             except Exception as e:
                 print(f"WARNING: could not generate ML predictions ({e}). Using seed-based fallback.")

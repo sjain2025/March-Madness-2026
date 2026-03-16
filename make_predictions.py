@@ -1,7 +1,7 @@
 import argparse
 from dataclasses import dataclass
 from itertools import combinations
-from typing import Optional
+from typing import Optional, Dict
 
 import numpy as np
 import pandas as pd
@@ -20,6 +20,7 @@ class ModelBundle:
     train_seasons: list
     calib_season: int
     recency_decay: float
+    season_weights: Dict[int, float]
 
 
 def _season_feature_snapshot(which: str, season: int, recency_decay: float = 0.99) -> pd.DataFrame:
@@ -314,7 +315,7 @@ def train_time_series_gb(
     which: str,
     train_end_season: int,
     calib_season: Optional[int] = None,
-    train_years: int = 5,
+    train_years: int = 7,
     recency_decay: float = 0.99,
 ) -> ModelBundle:
     """
@@ -338,7 +339,7 @@ def train_time_series_gb(
     else:
         train_seasons = train_seasons_full
 
-    # Season-based validation scores (walk-forward)
+    # Season-based validation scores (walk-forward) using fixed 7-season weights
     val_seasons = [s for s in train_seasons if s >= train_seasons[0] + 3]
     feature_cols = None
     fold_scores = []
@@ -358,9 +359,18 @@ def train_time_series_gb(
             l2_regularization=1.0,
             random_state=7,
         )
-        # Explicit 5-year season weights: 63,18,9,6,4% for offsets 0..4
+        # Fixed 7-season weights (offsets 0..6, 0=most recent):
+        # 0.4, 0.25, 0.15, 0.05, 0.05, 0.05, 0.05
+        season_weight = {
+            0: 0.40,
+            1: 0.25,
+            2: 0.15,
+            3: 0.05,
+            4: 0.05,
+            5: 0.05,
+            6: 0.05,
+        }
         offsets_tr = train_end_season - s_tr
-        season_weight = {0: 0.63, 1: 0.18, 2: 0.09, 3: 0.06, 4: 0.04}
         w_tr = np.array([season_weight.get(int(d), 0.0) for d in offsets_tr], dtype=float)
         model.fit(X_tr, y_tr, sample_weight=w_tr)
         p = model.predict_proba(X_va)[:, 1]
@@ -383,7 +393,6 @@ def train_time_series_gb(
         random_state=7,
     )
     offsets_train = train_end_season - s_train
-    season_weight = {0: 0.63, 1: 0.18, 2: 0.09, 3: 0.06, 4: 0.04}
     w_train = np.array([season_weight.get(int(d), 0.0) for d in offsets_train], dtype=float)
     base_model.fit(X_train, y_train, sample_weight=w_train)
 
@@ -404,6 +413,7 @@ def train_time_series_gb(
         train_seasons=train_seasons,
         calib_season=calib,
         recency_decay=recency_decay,
+        season_weights=season_weight,
     )
 
 
