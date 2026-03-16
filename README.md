@@ -1,4 +1,4 @@
-# March Madness Machine Learning (MMML) Challenge Model
+# March Madness Machine Learning (MMML) Model
 
 This project trains a gradient-boosted model on recent NCAA Division I seasons (with heavy weight on recent years), calibrates win probabilities, generates matchup prediction CSVs, and then uses those predictions to fill and print 2026 men’s and women’s tournament brackets.
 
@@ -35,15 +35,9 @@ This project trains a gradient-boosted model on recent NCAA Division I seasons (
 
 ## How to Run
 
-From the `MMML` directory (use `python3` or `python` depending on your setup):
+From the `MMML` directory (use `python3` or `python` depending on your setup). Make sure you have `pandas`, `numpy`, and `scikit-learn` installed (for example: `pip install pandas numpy scikit-learn`).
 
-1. **Install dependencies** (example with `pip`):
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. **Generate or refresh 2026 prediction CSVs**:
+1. **Generate or refresh 2026 prediction CSVs**:
 
    ```bash
    python3 make_predictions.py --season 2026 --train_end_season 2025 --out_dir predictions
@@ -51,7 +45,7 @@ From the `MMML` directory (use `python3` or `python` depending on your setup):
 
    This writes `MNCAATourneyPredictions.csv` and `WNCAATourneyPredictions.csv` into `predictions/`.
 
-3. **Print the 2026 men’s and women’s brackets**:
+2. **Print the 2026 men’s and women’s brackets**:
 
    ```bash
    python3 madness.py
