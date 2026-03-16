@@ -152,6 +152,14 @@ class Bracket:
     def seed(self):
         seeds_data = read_data("NCAATourneySeeds", self.which)
         seedings = seeds_data[seeds_data['Season'] == self.season]
+        if len(seedings) == 0:
+            # If official seeds for this season are not available in data/,
+            # use known 2026 men's matchups if provided; otherwise fall back.
+            if self.which == 'M' and self.season == 2026:
+                self.seed_2026_mens_espn()
+            else:
+                self.seed_synthetic()
+            return
         for i in range(len(seedings)):
             id = seedings.iloc[i]['TeamID']
             region_seed = seedings.iloc[i]['Seed']
@@ -164,6 +172,224 @@ class Bracket:
             else: # Add a playin
                 self.bracket.loc[len(self.bracket)] = [region, 0, seed, 
                                                        region_seed[3:4], id, id, None]
+
+    def _normalize_team_key(self, s: str) -> str:
+        s = s.lower()
+        out = []
+        for ch in s:
+            if ch.isalnum():
+                out.append(ch)
+        return "".join(out)
+
+    def _team_id_from_name(self, name: str) -> int:
+        """
+        Resolve a human-readable name to TeamID, using normalization and a small alias table.
+        """
+        aliases = {
+            "ohio state": "Ohio St",
+            "uconn": "Connecticut",
+            "ca baptist": "Cal Baptist",
+            "california baptist": "Cal Baptist",
+            "long island": "LIU Brooklyn",
+            "utah state": "Utah St",
+            "kennesaw st": "Kennesaw",
+            "miami": "Miami FL",
+            "queens": "Queens NC",
+            "mcneese": "McNeese St",
+            "saint mary's": "St Mary's CA",
+            "saint marys": "St Mary's CA",
+            "saint louis": "St Louis",
+            "iowa state": "Iowa St",
+        }
+        n = aliases.get(name.lower(), name)
+        teams = self.teams
+        key_to_id = {self._normalize_team_key(tn): int(tid) for tid, tn in zip(teams["TeamID"], teams["TeamName"])}
+        k = self._normalize_team_key(n)
+        if k in key_to_id:
+            return key_to_id[k]
+        raise Exception(f"Could not resolve team name '{name}' (normalized '{k}')")
+
+    def _avg_margin_by_team(self):
+        results = read_data("RegularSeasonDetailedResults", self.which)
+        results = results[results["Season"] == self.season].copy()
+        if results.empty:
+            raise Exception(f"No regular season data for season {self.season} ({self.which})")
+        results["Wmargin"] = results["WScore"] - results["LScore"]
+        w = results[["WTeamID", "Wmargin"]].rename(columns={"WTeamID": "TeamID", "Wmargin": "margin"})
+        l = results[["LTeamID", "Wmargin"]].rename(columns={"LTeamID": "TeamID", "Wmargin": "margin"})
+        l["margin"] = -l["margin"]
+        return pd.concat([w, l], ignore_index=True).groupby("TeamID")["margin"].mean().sort_values(ascending=False)
+
+    def seed_2026_mens_espn(self):
+        """
+        Seed the 2026 men's bracket from the ESPN-provided matchups in the prompt.
+
+        Regions mapping used by this code:
+        - W: East, X: West, Y: South, Z: Midwest
+
+        Any TBD teams are filled from remaining teams by 2026 average margin.
+        """
+        # Region letters used by the bracket printer
+        EAST, WEST, SOUTH, MIDWEST = "W", "X", "Y", "Z"
+
+        # Seed slots: (region, seed) -> team name (None means TBD)
+        seeds = {
+            # EAST
+            (EAST, 1): "Duke",
+            (EAST, 16): "Siena",
+            (EAST, 8): "Ohio State",
+            (EAST, 9): "TCU",
+            (EAST, 5): "St John's",
+            (EAST, 12): "Northern Iowa",
+            (EAST, 4): "Kansas",
+            (EAST, 13): "CA Baptist",
+            (EAST, 6): "Louisville",
+            (EAST, 11): "South Florida",
+            (EAST, 3): "Michigan St",
+            (EAST, 14): "N Dakota St",
+            (EAST, 7): "UCLA",
+            (EAST, 10): "UCF",
+            (EAST, 2): "UConn",
+            (EAST, 15): "Furman",
+            # WEST
+            (WEST, 1): "Arizona",
+            (WEST, 16): "Long Island",
+            (WEST, 8): "Villanova",
+            (WEST, 9): "Utah State",
+            (WEST, 5): "Wisconsin",
+            (WEST, 12): "High Point",
+            (WEST, 4): "Arkansas",
+            (WEST, 13): "Hawai'i",
+            (WEST, 6): "BYU",
+            (WEST, 11): None,  # play-in: SMU vs Miami OH
+            (WEST, 3): "Gonzaga",
+            (WEST, 14): "Kennesaw St",
+            (WEST, 7): "Miami",
+            (WEST, 10): "Missouri",
+            (WEST, 2): "Purdue",
+            (WEST, 15): "Queens",
+            # SOUTH
+            (SOUTH, 1): "Florida",
+            (SOUTH, 16): None,  # play-in: Lehigh vs Prairie View
+            (SOUTH, 8): "Clemson",
+            (SOUTH, 9): "Iowa",
+            (SOUTH, 5): "Vanderbilt",
+            (SOUTH, 12): "McNeese",
+            (SOUTH, 4): "Nebraska",
+            (SOUTH, 13): "Troy",
+            (SOUTH, 6): "North Carolina",
+            (SOUTH, 11): "VCU",
+            (SOUTH, 3): "Illinois",
+            (SOUTH, 14): "Penn",
+            (SOUTH, 7): "Saint Mary's",
+            (SOUTH, 10): "Texas A&M",
+            (SOUTH, 2): "Houston",
+            (SOUTH, 15): "Idaho",
+            # MIDWEST
+            (MIDWEST, 1): "Michigan",
+            (MIDWEST, 16): None,  # play-in: Howard vs UMBC
+            (MIDWEST, 8): "Georgia",
+            (MIDWEST, 9): "Saint Louis",
+            (MIDWEST, 5): "Texas Tech",
+            (MIDWEST, 12): "Akron",
+            (MIDWEST, 4): "Alabama",
+            (MIDWEST, 13): "Hofstra",
+            (MIDWEST, 6): "Tennessee",
+            (MIDWEST, 11): None,  # play-in: NC State vs Texas
+            (MIDWEST, 3): "Virginia",
+            (MIDWEST, 14): "Wright St",
+            (MIDWEST, 7): "Kentucky",
+            (MIDWEST, 10): "Santa Clara",
+            (MIDWEST, 2): "Iowa State",
+            (MIDWEST, 15): "Tennessee St",
+        }
+
+        # NOTE: ESPN bracket has the 11-seed play-ins in these regions:
+        # - West: Texas vs NC State (winner plays BYU)
+        # - Midwest: SMU vs Miami OH (winner plays Tennessee)
+        playins = {
+            (WEST, 11): ("NC State", "Texas"),
+            (MIDWEST, 11): ("SMU", "Miami OH"),
+            (SOUTH, 16): ("Lehigh", "Prairie View"),
+            (MIDWEST, 16): ("Howard", "UMBC"),
+        }
+
+        # Resolve all explicitly named teams
+        chosen_ids = set()
+        resolved = {}
+        for (region, seed), name in seeds.items():
+            if name is None:
+                continue
+            tid = self._team_id_from_name(name)
+            resolved[(region, seed)] = tid
+            chosen_ids.add(tid)
+
+        # Fill any remaining TBD slots with best remaining teams by margin
+        margins = self._avg_margin_by_team()
+        remaining = [int(t) for t in margins.index.tolist() if int(t) not in chosen_ids]
+        for (region, seed), name in list(seeds.items()):
+            if name is None and (region, seed) not in playins:
+                tid = remaining.pop(0)
+                resolved[(region, seed)] = tid
+                chosen_ids.add(tid)
+
+        # Seed all non-playin slots
+        for (region, seed), tid in resolved.items():
+            slot = self.get_slot(seed)
+            self.set_predicted(region, 1, slot, tid)
+            self.set_actual(region, 1, slot, tid)
+
+        # Add play-in rows (two teams per (region,seed))
+        for (region, seed), (n1, n2) in playins.items():
+            t1 = self._team_id_from_name(n1)
+            t2 = self._team_id_from_name(n2)
+            for code, tid in zip(["a", "b"], [t1, t2]):
+                self.bracket.loc[len(self.bracket)] = [region, 0, seed, code, tid, tid, None]
+
+    def seed_synthetic(self):
+        """
+        Create a 68-team bracket seeding without an official Seeds file.
+        Picks top 68 teams by a simple 2026 regular-season margin metric, then
+        assigns them into standard seed slots across regions, with four play-ins.
+        """
+        results = read_data("RegularSeasonDetailedResults", self.which)
+        results = results[results['Season'] == self.season].copy()
+        if results.empty:
+            raise Exception(f"No regular season data for season {self.season} ({self.which})")
+
+        # Average scoring margin per team
+        results["Wmargin"] = results["WScore"] - results["LScore"]
+        w = results[["WTeamID", "Wmargin"]].rename(columns={"WTeamID": "TeamID", "Wmargin": "margin"})
+        l = results[["LTeamID", "Wmargin"]].rename(columns={"LTeamID": "TeamID", "Wmargin": "margin"})
+        l["margin"] = -l["margin"]
+        margins = pd.concat([w, l], ignore_index=True).groupby("TeamID")["margin"].mean().sort_values(ascending=False)
+
+        field = margins.index.tolist()[:68]
+
+        # Seed list: 1..16 per region, with four play-in seeds (we'll use 11 and 16 like typical)
+        regions = self.regions
+        # Assign top 64 directly, last 4 into play-in slots (2 games) by giving them duplicate seeds
+        direct = field[:64]
+        playin = field[64:]
+
+        # Fill direct teams into regions/seeds in order
+        idx = 0
+        for seed in range(1, 17):
+            for region in regions:
+                if idx >= len(direct):
+                    break
+                team_id = direct[idx]
+                idx += 1
+                slot = self.get_slot(seed)
+                self.set_predicted(region, 1, slot, team_id)
+                self.set_actual(region, 1, slot, team_id)
+
+        # Add four play-in teams: two games at seed 16 in regions W and Y
+        # (This is a simple placeholder; real play-in assignment differs year to year.)
+        if len(playin) == 4:
+            for region, seed, pair in [("W", 16, playin[:2]), ("Y", 16, playin[2:])]:
+                for code, tid in zip(["a", "b"], pair):
+                    self.bracket.loc[len(self.bracket)] = [region, 0, seed, code, tid, tid, None]
                 
     def next_region(self, cur_region, cur_round):
         return (cur_region if cur_round < 5 else 
@@ -356,7 +582,7 @@ class ProgressiveBracket(Bracket):
 
 if __name__ == "__main__":
     for which, label in [('M', "Men's"), ('W', "Women's")]:
-        print("\n=== %s 2025 Regular Bracket (basic seed-based model) ===\n" % label)
+        print("\n=== %s 2026 Regular Bracket ===\n" % label)
         # Ensure ML predictions exist (can take a few minutes on first run)
         pred_path = f"predictions/{which}NCAATourneyPredictions.csv"
         if not os.path.exists(pred_path):
@@ -366,12 +592,13 @@ if __name__ == "__main__":
                     generate_global_predictions_csv,
                     train_time_series_gb,
                 )
-                season = 2025
-                bundle = train_time_series_gb(which, train_end_season=season)
+                season = 2026
+                # Train on last 5 seasons ending at 2025, weighted toward recent
+                bundle = train_time_series_gb(which, train_end_season=2025, train_years=5, recency_decay=0.7)
                 generate_global_predictions_csv(which, bundle, season, pred_path)
             except Exception as e:
                 print(f"WARNING: could not generate ML predictions ({e}). Using seed-based fallback.")
-        b = Bracket(2025, which)
+        b = Bracket(2026, which)
         b.seed()
         b.fill()
         b.show()

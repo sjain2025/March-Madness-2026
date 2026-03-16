@@ -159,7 +159,7 @@ def _season_feature_snapshot(which: str, season: int) -> pd.DataFrame:
     return feats
 
 
-def _build_training_rows(which: str, seasons: list[int]) -> tuple[pd.DataFrame, np.ndarray]:
+def _build_training_rows(which: str, seasons: list[int]) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
     """
     Build supervised training data from tourney games.
     Label: 1 if Team1 wins.
@@ -180,6 +180,7 @@ def _build_training_rows(which: str, seasons: list[int]) -> tuple[pd.DataFrame, 
 
     rows = []
     y = []
+    season_out = []
     for _, g in results.iterrows():
         season = int(g["Season"])
         w_id = int(g["WTeamID"])
@@ -211,6 +212,7 @@ def _build_training_rows(which: str, seasons: list[int]) -> tuple[pd.DataFrame, 
 
             rows.append(row)
             y.append(label)
+            season_out.append(season)
 
     X = pd.DataFrame(rows)
     y = np.array(y, dtype=int)
@@ -218,10 +220,16 @@ def _build_training_rows(which: str, seasons: list[int]) -> tuple[pd.DataFrame, 
         raise Exception("No training rows could be built (missing features?)")
 
     feature_cols = [c for c in X.columns if c.startswith("diff_")]
-    return X[feature_cols], y
+    return X[feature_cols], y, np.array(season_out, dtype=int)
 
 
-def train_time_series_gb(which: str, train_end_season: int, calib_season: Optional[int] = None) -> ModelBundle:
+def train_time_series_gb(
+    which: str,
+    train_end_season: int,
+    calib_season: Optional[int] = None,
+    train_years: int = 5,
+    recency_decay: float = 0.7,
+) -> ModelBundle:
     """
     Season-based CV: trains on earlier seasons, validates on later seasons.
     Optimizes log loss and then calibrates probabilities on the final calibration season.
@@ -236,7 +244,12 @@ def train_time_series_gb(which: str, train_end_season: int, calib_season: Option
         raise Exception("Not enough seasons to train (need at least ~8)")
 
     calib = calib_season if calib_season is not None else usable[-1]
-    train_seasons = [s for s in usable if s < calib]
+    train_seasons_full = [s for s in usable if s < calib]
+    # Restrict to last N seasons (weighted toward recent)
+    if len(train_seasons_full) > train_years:
+        train_seasons = train_seasons_full[-train_years:]
+    else:
+        train_seasons = train_seasons_full
 
     # Season-based validation scores (walk-forward)
     val_seasons = [s for s in train_seasons if s >= train_seasons[0] + 3]
@@ -246,8 +259,8 @@ def train_time_series_gb(which: str, train_end_season: int, calib_season: Option
         tr = [s for s in train_seasons if s < vs]
         if len(tr) < 3:
             continue
-        X_tr, y_tr = _build_training_rows(which, tr)
-        X_va, y_va = _build_training_rows(which, [vs])
+        X_tr, y_tr, s_tr = _build_training_rows(which, tr)
+        X_va, y_va, _ = _build_training_rows(which, [vs])
         feature_cols = list(X_tr.columns)
 
         model = HistGradientBoostingClassifier(
@@ -258,7 +271,8 @@ def train_time_series_gb(which: str, train_end_season: int, calib_season: Option
             l2_regularization=1.0,
             random_state=7,
         )
-        model.fit(X_tr, y_tr)
+        w_tr = np.exp(-recency_decay * (train_end_season - s_tr))
+        model.fit(X_tr, y_tr, sample_weight=w_tr)
         p = model.predict_proba(X_va)[:, 1]
         fold_scores.append((vs, float(log_loss(y_va, p, labels=[0, 1]))))
 
@@ -267,7 +281,7 @@ def train_time_series_gb(which: str, train_end_season: int, calib_season: Option
         print(f"[{which}] walk-forward logloss avg={avg:.4f} folds={len(fold_scores)} last={fold_scores[-1]}")
 
     # Train base model on all pre-calibration seasons
-    X_train, y_train = _build_training_rows(which, train_seasons)
+    X_train, y_train, s_train = _build_training_rows(which, train_seasons)
     feature_cols = list(X_train.columns)
 
     base_model = HistGradientBoostingClassifier(
@@ -278,10 +292,11 @@ def train_time_series_gb(which: str, train_end_season: int, calib_season: Option
         l2_regularization=1.0,
         random_state=7,
     )
-    base_model.fit(X_train, y_train)
+    w_train = np.exp(-recency_decay * (train_end_season - s_train))
+    base_model.fit(X_train, y_train, sample_weight=w_train)
 
     # Calibrate on the held-out calibration season (time-safe)
-    X_cal, y_cal = _build_training_rows(which, [calib])
+    X_cal, y_cal, _ = _build_training_rows(which, [calib])
     p_cal = base_model.predict_proba(X_cal)[:, 1]
     calibrator = IsotonicRegression(out_of_bounds="clip")
     calibrator.fit(p_cal, y_cal)
