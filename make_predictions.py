@@ -23,7 +23,7 @@ class ModelBundle:
     season_weights: Dict[int, float]
 
 
-def _season_feature_snapshot(which: str, season: int, recency_decay: float = 0.99) -> pd.DataFrame:
+def _season_feature_snapshot(which: str, season: int, recency_decay: float = 0.995) -> pd.DataFrame:
     """
     Build per-team season features from regular season detailed results.
 
@@ -246,7 +246,7 @@ def _season_feature_snapshot(which: str, season: int, recency_decay: float = 0.9
 def _build_training_rows(
     which: str,
     seasons: list[int],
-    recency_decay: float = 0.99,
+    recency_decay: float = 0.995,
 ) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
     """
     Build supervised training data from tourney games.
@@ -316,7 +316,7 @@ def train_time_series_gb(
     train_end_season: int,
     calib_season: Optional[int] = None,
     train_years: int = 7,
-    recency_decay: float = 0.99,
+    recency_decay: float = 0.995,
 ) -> ModelBundle:
     """
     Season-based CV: trains on earlier seasons, validates on later seasons.
@@ -430,7 +430,7 @@ def _eligible_team_ids(which: str, season: int) -> list[int]:
     return sorted(active["TeamID"].unique().tolist())
 
 
-def _season_features_by_team(which: str, season: int, recency_decay: float = 0.99) -> pd.DataFrame:
+def _season_features_by_team(which: str, season: int, recency_decay: float = 0.995) -> pd.DataFrame:
     f = _season_feature_snapshot(which, season, recency_decay=recency_decay)
     if f.empty:
         reg = read_data("RegularSeasonDetailedResults", which)

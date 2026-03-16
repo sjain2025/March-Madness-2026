@@ -246,13 +246,15 @@ class Bracket:
         """
         Seed the 2026 men's bracket from the ESPN-provided matchups in the prompt.
 
-        Regions mapping used by this code:
-        - W: East, X: West, Y: South, Z: Midwest
+        Regions mapping used by this code (displayed in the original
+        bracket layout, where left side is W/X and right side is Y/Z):
+        - W: East, X: South, Y: West, Z: Midwest
 
         Any TBD teams are filled from remaining teams by 2026 average margin.
         """
         # Region letters used by the bracket printer
-        EAST, WEST, SOUTH, MIDWEST = "W", "X", "Y", "Z"
+        # (EAST=W top-left, SOUTH=X bottom-left, WEST=Y top-right, MIDWEST=Z bottom-right)
+        EAST, SOUTH, WEST, MIDWEST = "W", "X", "Y", "Z"
 
         # Seed slots: (region, seed) -> team name (None means TBD)
         seeds = {
@@ -372,8 +374,11 @@ class Bracket:
         """
         Seed the 2026 women's bracket from the provided matchups in the prompt.
 
-        Regions mapping used by this code:
-        - W, X, Y, Z: four regions in display order.
+        Desired quadrant layout (visual bracket):
+        - Region 1 (UConn):  top-left    -> W
+        - Region 2 (Iowa):   bottom-left -> X
+        - Region 3 (Duke):   top-right   -> Y
+        - Region 4 (Texas):  bottom-right-> Z
         """
         R1, R2, R3, R4 = "W", "X", "Y", "Z"
 
@@ -601,11 +606,80 @@ class Bracket:
                                              self.get_predicted(region, round, slot+1), predictions)
                     self.set_predicted(region, round+1, (slot+1)//2, winner)
         # Finally do the semis and championship
-        # Semifinals: East vs South, West vs Midwest
-        self.set_predicted('W', 6, 1, self.get_winner(self.get_predicted('W', 5, 1),
-                                                      self.get_predicted('Y', 5, 1), predictions))
-        self.set_predicted('Y', 6, 1, self.get_winner(self.get_predicted('X', 5, 1),
-                                                      self.get_predicted('Z', 5, 1), predictions))
+        # Semifinals pairings are determined by region champions from round 5.
+        # To keep the men's visual bracket sides consistent (left vs right),
+        # we swap which semifinal feeds the left/right positions, without
+        # changing who actually plays whom.
+        if self.which == 'M':
+            # Men's: keep matchups (W vs Y) and (X vs Z), but swap which
+            # winner is stored as region 'W' vs 'Y' so that the left/right
+            # sides of the printed bracket align with the actual paths.
+            self.set_predicted(
+                'W',
+                6,
+                1,
+                self.get_winner(
+                    self.get_predicted('X', 5, 1),
+                    self.get_predicted('Z', 5, 1),
+                    predictions,
+                ),
+            )
+            self.set_predicted(
+                'Y',
+                6,
+                1,
+                self.get_winner(
+                    self.get_predicted('W', 5, 1),
+                    self.get_predicted('Y', 5, 1),
+                    predictions,
+                ),
+            )
+        elif self.which == 'W':
+            # Women's: R1=W, R2=X, R3=Y, R4=Z so semis are:
+            #   left:  W vs X  (Region 1 vs 2 = UConn vs Iowa)
+            #   right: Y vs Z  (Region 3 vs 4 = Duke vs Texas)
+            self.set_predicted(
+                'W',
+                6,
+                1,
+                self.get_winner(
+                    self.get_predicted('W', 5, 1),
+                    self.get_predicted('X', 5, 1),
+                    predictions,
+                ),
+            )
+            self.set_predicted(
+                'Y',
+                6,
+                1,
+                self.get_winner(
+                    self.get_predicted('Y', 5, 1),
+                    self.get_predicted('Z', 5, 1),
+                    predictions,
+                ),
+            )
+        else:
+            # Any other: original mapping
+            self.set_predicted(
+                'W',
+                6,
+                1,
+                self.get_winner(
+                    self.get_predicted('W', 5, 1),
+                    self.get_predicted('Y', 5, 1),
+                    predictions,
+                ),
+            )
+            self.set_predicted(
+                'Y',
+                6,
+                1,
+                self.get_winner(
+                    self.get_predicted('X', 5, 1),
+                    self.get_predicted('Z', 5, 1),
+                    predictions,
+                ),
+            )
         self.set_predicted('W', 7, 1, self.get_winner(self.get_predicted('W', 6, 1),
                                                       self.get_predicted('Y', 6, 1), predictions))
         
@@ -768,10 +842,11 @@ if __name__ == "__main__":
                     train_time_series_gb,
                 )
                 season = 2026
-                # Train on last 7 seasons ending at 2025 with fixed
-                # season-level weights (0.4, 0.25, 0.15, 0.05, 0.05, 0.05, 0.05)
-                bundle = train_time_series_gb(which, train_end_season=2025, train_years=7)
-                print(f"[{which}] season weights (offsets 0..6, 0=most recent): {bundle.season_weights}")
+                # Train on the last 6 seasons ending at 2025 using
+                # recency-weighted game features (decay=0.995) and an
+                # adaptively-tuned season-level decay.
+                bundle = train_time_series_gb(which, train_end_season=2025, train_years=6)
+                print(f"[{which}] season weighting: {bundle.season_weights}")
                 generate_global_predictions_csv(which, bundle, season, pred_path)
             except Exception as e:
                 print(f"WARNING: could not generate ML predictions ({e}). Using seed-based fallback.")
