@@ -5,6 +5,7 @@
       This software is distributed under the terms of the 
       Simplified BSD License (see ipc/LICENSE.TXT)
 '''
+import json
 import os
 import pandas as pd
 from utils import read_data, read_tourney_predictions
@@ -751,44 +752,81 @@ class Bracket:
     
     def _team_scoring_profile(self, team_id):
         """
-        Simple season-level scoring profile for one team, based on 2026
-        regular-season games: average points scored and allowed.
+        Season-level scoring profile: points scored and allowed per game.
+        Uses self.season; if no data, uses the most recent season with data.
         """
         results = read_data("RegularSeasonDetailedResults", self.which)
-        results = results[results["Season"] == self.season]
-        if results.empty:
-            return None
-        w = results[results["WTeamID"] == team_id][["WScore", "LScore"]]
-        l = results[results["LTeamID"] == team_id][["LScore", "WScore"]]
-        w = w.rename(columns={"WScore": "For", "LScore": "Against"})
-        l = l.rename(columns={"LScore": "For", "WScore": "Against"})
-        all_games = pd.concat([w, l], ignore_index=True)
-        if all_games.empty:
-            return None
-        return {
-            "for": all_games["For"].mean(),
-            "against": all_games["Against"].mean(),
-        }
+        for season in [self.season] + sorted(
+            results["Season"].unique().tolist(), reverse=True
+        ):
+            if season == self.season and season not in results["Season"].values:
+                continue
+            sub = results[results["Season"] == season]
+            w = sub[sub["WTeamID"] == team_id][["WScore", "LScore"]]
+            l = sub[sub["LTeamID"] == team_id][["LScore", "WScore"]]
+            w = w.rename(columns={"WScore": "For", "LScore": "Against"})
+            l = l.rename(columns={"LScore": "For", "WScore": "Against"})
+            all_games = pd.concat([w, l], ignore_index=True)
+            if all_games.empty:
+                continue
+            return {
+                "for": float(all_games["For"].mean()),
+                "against": float(all_games["Against"].mean()),
+            }
+        return None
+
+    def _team_possession_profile(self, team_id):
+        """
+        Per-game points and estimated possessions (FGA - OR + TO + 0.44*FTA)
+        for the requested season, or latest available. Returns None if no data.
+        """
+        results = read_data("RegularSeasonDetailedResults", self.which)
+        for season in [self.season] + sorted(
+            results["Season"].unique().tolist(), reverse=True
+        ):
+            if season == self.season and season not in results["Season"].values:
+                continue
+            sub = results[results["Season"] == season]
+            # Winner rows
+            w = sub[sub["WTeamID"] == team_id].copy()
+            w = w.rename(columns={
+                "WScore": "Pts", "WFGA": "FGA", "WOR": "OR", "WTO": "TO", "WFTA": "FTA",
+            })
+            w["Poss"] = w["FGA"] - w["OR"] + w["TO"] + 0.44 * w["FTA"]
+            # Loser rows
+            l = sub[sub["LTeamID"] == team_id].copy()
+            l = l.rename(columns={
+                "LScore": "Pts", "LFGA": "FGA", "LOR": "OR", "LTO": "TO", "LFTA": "FTA",
+            })
+            l["Poss"] = l["FGA"] - l["OR"] + l["TO"] + 0.44 * l["FTA"]
+            both = pd.concat([
+                w[["Pts", "Poss"]],
+                l[["Pts", "Poss"]],
+            ], ignore_index=True)
+            if both.empty:
+                continue
+            return {
+                "pts": float(both["Pts"].mean()),
+                "poss": float(both["Poss"].mean()),
+            }
+        return None
 
     def estimate_championship_total_points(self):
         """
-        Use regular-season scoring profiles for the two predicted finalists
-        to estimate a total points tiebreaker for the championship game.
+        Estimate total points in the championship game from historical
+        championship game totals (same gender) in NCAATourneyCompactResults.
+        Returns the rounded mean of past finals' combined score.
         """
-        # Finalists are winners of the two semifinals:
-        t1 = self.get_predicted("W", 6, 1)
-        t2 = self.get_predicted("Y", 6, 1)
-        if t1 is None or t2 is None:
+        results = read_data("NCAATourneyCompactResults", self.which)
+        if results.empty or len(results) < 2:
             return None
-        p1 = self._team_scoring_profile(t1)
-        p2 = self._team_scoring_profile(t2)
-        if p1 is None or p2 is None:
+        # Championship game each season is the game on the final day (max DayNum)
+        last_day = results.groupby("Season")["DayNum"].transform("max")
+        finals = results[results["DayNum"] == last_day]
+        totals = (finals["WScore"] + finals["LScore"]).astype(int)
+        if totals.empty:
             return None
-        # Symmetric expectation: each team scores average of its own offense
-        # and opponent's defense; sum gives expected total.
-        exp_t1 = 0.5 * (p1["for"] + p2["against"])
-        exp_t2 = 0.5 * (p2["for"] + p1["against"])
-        return int(round(exp_t1 + exp_t2))
+        return int(round(totals.mean()))
     
 class ProgressiveBracket(Bracket):
     predictions = None
@@ -846,8 +884,10 @@ if __name__ == "__main__":
                 # recency-weighted game features (decay=0.995) and an
                 # adaptively-tuned season-level decay.
                 bundle = train_time_series_gb(which, train_end_season=2025, train_years=6)
-                print(f"[{which}] season weighting: {bundle.season_weights}")
                 generate_global_predictions_csv(which, bundle, season, pred_path)
+                weights_path = os.path.join("predictions", f"{which}_season_weights.json")
+                with open(weights_path, "w") as f:
+                    json.dump({str(k): v for k, v in bundle.season_weights.items()}, f, indent=2)
             except Exception as e:
                 print(f"WARNING: could not generate ML predictions ({e}). Using seed-based fallback.")
         b = Bracket(2026, which)
@@ -857,3 +897,10 @@ if __name__ == "__main__":
         tb = b.estimate_championship_total_points()
         if tb is not None:
             print(f"\n{label} tiebreaker (predicted total points in championship): {tb}\n")
+        # weights_path = os.path.join("predictions", f"{which}_season_weights.json")
+        # if os.path.exists(weights_path):
+        #     with open(weights_path) as f:
+        #         sw = json.load(f)
+        #     print(f"{label} season weights (offset -> weight): {sw}\n")
+        # else:
+        #     print(f"{label} season weights: not available (run make_predictions.py to save).\n")

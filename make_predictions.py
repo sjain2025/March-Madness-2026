@@ -1,7 +1,9 @@
 import argparse
+import json
+import os
 from dataclasses import dataclass
 from itertools import combinations
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -10,6 +12,13 @@ from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import log_loss
 
 from utils import read_data
+
+
+def _season_weights_from_decay(decay: float, max_offset: int) -> Dict[int, float]:
+    """Build normalized season weights: w[offset] ∝ exp(-decay * offset), 0 = most recent."""
+    w = np.exp(-decay * np.arange(max_offset + 1, dtype=float))
+    w /= w.sum()
+    return {i: float(w[i]) for i in range(max_offset + 1)}
 
 
 @dataclass(frozen=True)
@@ -311,6 +320,48 @@ def _build_training_rows(
     return X[feature_cols], y, np.array(season_out, dtype=int)
 
 
+def _walk_forward_cv_logloss(
+    which: str,
+    train_seasons: List[int],
+    train_end_season: int,
+    recency_decay: float,
+    season_weight: Dict[int, float],
+) -> Tuple[float, List[Tuple[int, float]]]:
+    """
+    Run walk-forward CV: for each validation season, train on earlier seasons
+    with the given season weights and compute log loss on the validation season.
+    Returns (mean_log_loss, list of (val_season, log_loss)).
+    """
+    val_seasons = [s for s in train_seasons if s >= train_seasons[0] + 3]
+    fold_scores = []
+    for vs in val_seasons:
+        tr = [s for s in train_seasons if s < vs]
+        if len(tr) < 3:
+            continue
+        X_tr, y_tr, s_tr = _build_training_rows(which, tr, recency_decay=recency_decay)
+        X_va, y_va, _ = _build_training_rows(which, [vs], recency_decay=recency_decay)
+        model = HistGradientBoostingClassifier(
+            loss="log_loss",
+            learning_rate=0.05,
+            max_depth=4,
+            max_iter=600,
+            l2_regularization=1.0,
+            random_state=7,
+        )
+        offsets_tr = train_end_season - s_tr
+        w_tr = np.array([season_weight.get(int(d), 0.0) for d in offsets_tr], dtype=float)
+        if w_tr.sum() <= 0:
+            fold_scores.append((vs, 1e9))
+            continue
+        model.fit(X_tr, y_tr, sample_weight=w_tr)
+        p = model.predict_proba(X_va)[:, 1]
+        fold_scores.append((vs, float(log_loss(y_va, p, labels=[0, 1]))))
+    if not fold_scores:
+        return float("inf"), []
+    avg = sum(s for _, s in fold_scores) / len(fold_scores)
+    return avg, fold_scores
+
+
 def train_time_series_gb(
     which: str,
     train_end_season: int,
@@ -320,68 +371,55 @@ def train_time_series_gb(
 ) -> ModelBundle:
     """
     Season-based CV: trains on earlier seasons, validates on later seasons.
-    Optimizes log loss and then calibrates probabilities on the final calibration season.
+    Season weights are learned by minimizing walk-forward validation log loss
+    (exponential decay in season offset). Calibrates probabilities on the final
+    calibration season.
     """
     results = read_data("NCAATourneyCompactResults", which)
     all_seasons = sorted(results["Season"].unique().tolist())
     reg = read_data("RegularSeasonDetailedResults", which)
     reg_seasons = set(reg["Season"].unique().tolist())
-    # Only use seasons where we have regular-season features available
     usable = [s for s in all_seasons if s <= train_end_season and s in reg_seasons]
     if len(usable) < 8:
         raise Exception("Not enough seasons to train (need at least ~8)")
 
     calib = calib_season if calib_season is not None else usable[-1]
     train_seasons_full = [s for s in usable if s < calib]
-    # Restrict to last N seasons (weighted toward recent)
     if len(train_seasons_full) > train_years:
         train_seasons = train_seasons_full[-train_years:]
     else:
         train_seasons = train_seasons_full
 
-    # Season-based validation scores (walk-forward) using fixed 7-season weights
-    val_seasons = [s for s in train_seasons if s >= train_seasons[0] + 3]
-    feature_cols = None
-    fold_scores = []
-    for vs in val_seasons:
-        tr = [s for s in train_seasons if s < vs]
-        if len(tr) < 3:
-            continue
-        X_tr, y_tr, s_tr = _build_training_rows(which, tr, recency_decay=recency_decay)
-        X_va, y_va, _ = _build_training_rows(which, [vs], recency_decay=recency_decay)
-        feature_cols = list(X_tr.columns)
+    max_offset = int(train_end_season - train_seasons[0])
 
-        model = HistGradientBoostingClassifier(
-            loss="log_loss",
-            learning_rate=0.05,
-            max_depth=4,
-            max_iter=600,
-            l2_regularization=1.0,
-            random_state=7,
+    # Learn season weights: optimize decay to minimize walk-forward CV log loss
+    decay_candidates = [0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0, 1.5, 2.0]
+    best_decay = 0.3
+    best_cv_ll = float("inf")
+    best_fold_scores: List[Tuple[int, float]] = []
+
+    for decay in decay_candidates:
+        sw = _season_weights_from_decay(decay, max_offset)
+        cv_ll, fold_scores = _walk_forward_cv_logloss(
+            which, train_seasons, train_end_season, recency_decay, sw
         )
-        # Fixed 7-season weights (offsets 0..6, 0=most recent):
-        # 0.4, 0.25, 0.15, 0.05, 0.05, 0.05, 0.05
-        season_weight = {
-            0: 0.40,
-            1: 0.25,
-            2: 0.15,
-            3: 0.05,
-            4: 0.05,
-            5: 0.05,
-            6: 0.05,
-        }
-        offsets_tr = train_end_season - s_tr
-        w_tr = np.array([season_weight.get(int(d), 0.0) for d in offsets_tr], dtype=float)
-        model.fit(X_tr, y_tr, sample_weight=w_tr)
-        p = model.predict_proba(X_va)[:, 1]
-        fold_scores.append((vs, float(log_loss(y_va, p, labels=[0, 1]))))
+        if cv_ll < best_cv_ll:
+            best_cv_ll = cv_ll
+            best_decay = decay
+            best_fold_scores = fold_scores
 
-    if fold_scores:
-        avg = sum(s for _, s in fold_scores) / len(fold_scores)
-        print(f"[{which}] walk-forward logloss avg={avg:.4f} folds={len(fold_scores)} last={fold_scores[-1]}")
+    season_weight = _season_weights_from_decay(best_decay, max_offset)
+    if best_fold_scores:
+        print(
+            f"[{which}] season weights (decay={best_decay:.2f}) "
+            f"cv_logloss={best_cv_ll:.4f} folds={len(best_fold_scores)} {best_fold_scores}"
+        )
+        print(f"[{which}] season_weights (offset->weight): {season_weight}")
 
-    # Train base model on all pre-calibration seasons
-    X_train, y_train, s_train = _build_training_rows(which, train_seasons, recency_decay=recency_decay)
+    # Train base model on all pre-calibration seasons with learned weights
+    X_train, y_train, s_train = _build_training_rows(
+        which, train_seasons, recency_decay=recency_decay
+    )
     feature_cols = list(X_train.columns)
 
     base_model = HistGradientBoostingClassifier(
@@ -418,16 +456,10 @@ def train_time_series_gb(
 
 
 def _eligible_team_ids(which: str, season: int) -> list[int]:
+    """Return all team IDs from the Teams file so the predictions CSV has every
+    possible matchup (required row count: n*(n-1)/2 for n teams)."""
     teams = read_data("Teams", which)
-    # Restrict to teams that are active Division I participants in the
-    # requested season, based on FirstD1Season / LastD1Season.
-    if "FirstD1Season" in teams.columns and "LastD1Season" in teams.columns:
-        active = teams[
-            (teams["FirstD1Season"] <= season) & (teams["LastD1Season"] >= season)
-        ]
-    else:
-        active = teams
-    return sorted(active["TeamID"].unique().tolist())
+    return sorted(teams["TeamID"].unique().tolist())
 
 
 def _season_features_by_team(which: str, season: int, recency_decay: float = 0.995) -> pd.DataFrame:
@@ -496,10 +528,13 @@ def main():
     m_bundle = train_time_series_gb("M", train_end_season=args.train_end_season, calib_season=args.calib_season)
     w_bundle = train_time_series_gb("W", train_end_season=args.train_end_season, calib_season=args.calib_season)
 
-    import os
     os.makedirs(args.out_dir, exist_ok=True)
     generate_global_predictions_csv("M", m_bundle, args.season, f"{args.out_dir}/MNCAATourneyPredictions.csv")
     generate_global_predictions_csv("W", w_bundle, args.season, f"{args.out_dir}/WNCAATourneyPredictions.csv")
+    for which, bundle in [("M", m_bundle), ("W", w_bundle)]:
+        path = os.path.join(args.out_dir, f"{which}_season_weights.json")
+        with open(path, "w") as f:
+            json.dump({str(k): v for k, v in bundle.season_weights.items()}, f, indent=2)
 
 
 if __name__ == "__main__":
