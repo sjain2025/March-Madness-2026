@@ -19,16 +19,20 @@ class ModelBundle:
     feature_cols: list
     train_seasons: list
     calib_season: int
+    recency_decay: float
 
 
-def _season_feature_snapshot(which: str, season: int) -> pd.DataFrame:
+def _season_feature_snapshot(which: str, season: int, recency_decay: float = 0.99) -> pd.DataFrame:
     """
     Build per-team season features from regular season detailed results.
 
-    Features are simple per-game averages of boxscore stats for:
-    - offense (team)
-    - defense (opponent allowed)
+    Features are primarily efficiency and rate stats:
+    - offensive and defensive rating (points per 100 possessions)
+    - turnover rate, offensive rebound rate, three-point attempt rate
     - win rate and average margin
+
+    Late-season momentum is modeled by exponentially down-weighting earlier
+    regular-season games using the provided recency_decay parameter.
     """
     df = read_data("RegularSeasonDetailedResults", which)
     df = df[df["Season"] == season].copy()
@@ -40,6 +44,7 @@ def _season_feature_snapshot(which: str, season: int) -> pd.DataFrame:
         columns={
             "WTeamID": "TeamID",
             "LTeamID": "OppID",
+            "DayNum": "DayNum",
             "WScore": "TeamScore",
             "LScore": "OppScore",
             "WFGM": "TeamFGM",
@@ -77,6 +82,7 @@ def _season_feature_snapshot(which: str, season: int) -> pd.DataFrame:
         columns={
             "LTeamID": "TeamID",
             "WTeamID": "OppID",
+            "DayNum": "DayNum",
             "LScore": "TeamScore",
             "WScore": "OppScore",
             "LFGM": "TeamFGM",
@@ -112,7 +118,52 @@ def _season_feature_snapshot(which: str, season: int) -> pd.DataFrame:
     games = pd.concat([w, l], ignore_index=True)
     games["Margin"] = games["TeamScore"] - games["OppScore"]
 
+    # Possessions for team and opponent
+    games["TeamPoss"] = (
+        games["TeamFGA"] - games["TeamOR"] + games["TeamTO"] + 0.44 * games["TeamFTA"]
+    )
+    games["OppPoss"] = (
+        games["OppFGA"] - games["OppOR"] + games["OppTO"] + 0.44 * games["OppFTA"]
+    )
+
+    # Efficiency and rate stats (handle zero-possession edge cases)
+    games["OffRating"] = np.where(
+        games["TeamPoss"] > 0, 100.0 * games["TeamScore"] / games["TeamPoss"], 0.0
+    )
+    games["DefRating"] = np.where(
+        games["OppPoss"] > 0, 100.0 * games["OppScore"] / games["OppPoss"], 0.0
+    )
+    games["TOVRate"] = np.where(
+        games["TeamPoss"] > 0, games["TeamTO"] / games["TeamPoss"], 0.0
+    )
+    # Offensive rebound rate: share of available offensive rebounds
+    games["ORRate"] = np.where(
+        (games["TeamOR"] + games["OppDR"]) > 0,
+        games["TeamOR"] / (games["TeamOR"] + games["OppDR"]),
+        0.0,
+    )
+    # Three-point attempt rate: fraction of FGA that are 3PA
+    games["ThreePARate"] = np.where(
+        games["TeamFGA"] > 0, games["TeamFGA3"] / games["TeamFGA"], 0.0
+    )
+
+    # Exponential recency weighting: most recent games get weight 1.0,
+    # earlier games get weight recency_decay ** (days_ago).
+    max_day = games["DayNum"].max()
+    days_ago = max_day - games["DayNum"]
+    games["_weight"] = np.power(recency_decay, days_ago.astype(float))
+
+    # Use a blend of traditional box-score stats (per game) and
+    # possession-based efficiency/rate metrics so that the new metrics
+    # inform but do not dominate the representation.
     agg_cols = [
+        # Possession-based metrics
+        "OffRating",
+        "DefRating",
+        "TOVRate",
+        "ORRate",
+        "ThreePARate",
+        # Traditional per-game box-score stats (pace-influenced)
         "TeamScore",
         "OppScore",
         "TeamFGM",
@@ -141,10 +192,15 @@ def _season_feature_snapshot(which: str, season: int) -> pd.DataFrame:
         "OppStl",
         "OppBlk",
         "OppPF",
+        # Outcomes
         "Margin",
         "Win",
     ]
-    feats = games.groupby("TeamID")[agg_cols].mean().reset_index()
+    # Compute weighted per-team averages to capture momentum
+    weighted = games[agg_cols].multiply(games["_weight"], axis=0)
+    sum_weight = games.groupby("TeamID")["_weight"].sum()
+    sum_xw = weighted.groupby(games["TeamID"]).sum()
+    feats = sum_xw.div(sum_weight, axis=0).reset_index()
     feats.insert(1, "Season", season)
 
     # Men only: add ranking snapshot near tourney time if available
@@ -159,7 +215,11 @@ def _season_feature_snapshot(which: str, season: int) -> pd.DataFrame:
     return feats
 
 
-def _build_training_rows(which: str, seasons: list[int]) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+def _build_training_rows(
+    which: str,
+    seasons: list[int],
+    recency_decay: float = 0.99,
+) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
     """
     Build supervised training data from tourney games.
     Label: 1 if Team1 wins.
@@ -175,8 +235,8 @@ def _build_training_rows(which: str, seasons: list[int]) -> tuple[pd.DataFrame, 
     seeds["SeedNum"] = seeds["Seed"].str[1:3].astype(int)
     seed_map = seeds.set_index(["Season", "TeamID"])["SeedNum"]
 
-    # Precompute per-season team features
-    season_feats = {s: _season_feature_snapshot(which, s) for s in seasons}
+    # Precompute per-season team features (with recency-weighted momentum)
+    season_feats = {s: _season_feature_snapshot(which, s, recency_decay=recency_decay) for s in seasons}
 
     rows = []
     y = []
@@ -228,7 +288,7 @@ def train_time_series_gb(
     train_end_season: int,
     calib_season: Optional[int] = None,
     train_years: int = 5,
-    recency_decay: float = 0.7,
+    recency_decay: float = 0.99,
 ) -> ModelBundle:
     """
     Season-based CV: trains on earlier seasons, validates on later seasons.
@@ -259,8 +319,8 @@ def train_time_series_gb(
         tr = [s for s in train_seasons if s < vs]
         if len(tr) < 3:
             continue
-        X_tr, y_tr, s_tr = _build_training_rows(which, tr)
-        X_va, y_va, _ = _build_training_rows(which, [vs])
+        X_tr, y_tr, s_tr = _build_training_rows(which, tr, recency_decay=recency_decay)
+        X_va, y_va, _ = _build_training_rows(which, [vs], recency_decay=recency_decay)
         feature_cols = list(X_tr.columns)
 
         model = HistGradientBoostingClassifier(
@@ -271,9 +331,9 @@ def train_time_series_gb(
             l2_regularization=1.0,
             random_state=7,
         )
-        # Explicit 5-year season weights: 75,18,5,1,1% for offsets 0..4
+        # Explicit 5-year season weights: 63,18,9,6,4% for offsets 0..4
         offsets_tr = train_end_season - s_tr
-        season_weight = {0: 0.75, 1: 0.18, 2: 0.05, 3: 0.01, 4: 0.01}
+        season_weight = {0: 0.63, 1: 0.18, 2: 0.09, 3: 0.06, 4: 0.04}
         w_tr = np.array([season_weight.get(int(d), 0.0) for d in offsets_tr], dtype=float)
         model.fit(X_tr, y_tr, sample_weight=w_tr)
         p = model.predict_proba(X_va)[:, 1]
@@ -284,7 +344,7 @@ def train_time_series_gb(
         print(f"[{which}] walk-forward logloss avg={avg:.4f} folds={len(fold_scores)} last={fold_scores[-1]}")
 
     # Train base model on all pre-calibration seasons
-    X_train, y_train, s_train = _build_training_rows(which, train_seasons)
+    X_train, y_train, s_train = _build_training_rows(which, train_seasons, recency_decay=recency_decay)
     feature_cols = list(X_train.columns)
 
     base_model = HistGradientBoostingClassifier(
@@ -296,12 +356,12 @@ def train_time_series_gb(
         random_state=7,
     )
     offsets_train = train_end_season - s_train
-    season_weight = {0: 0.75, 1: 0.18, 2: 0.05, 3: 0.01, 4: 0.01}
+    season_weight = {0: 0.63, 1: 0.18, 2: 0.09, 3: 0.06, 4: 0.04}
     w_train = np.array([season_weight.get(int(d), 0.0) for d in offsets_train], dtype=float)
     base_model.fit(X_train, y_train, sample_weight=w_train)
 
     # Calibrate on the held-out calibration season (time-safe)
-    X_cal, y_cal, _ = _build_training_rows(which, [calib])
+    X_cal, y_cal, _ = _build_training_rows(which, [calib], recency_decay=recency_decay)
     p_cal = base_model.predict_proba(X_cal)[:, 1]
     calibrator = IsotonicRegression(out_of_bounds="clip")
     calibrator.fit(p_cal, y_cal)
@@ -316,6 +376,7 @@ def train_time_series_gb(
         feature_cols=feature_cols,
         train_seasons=train_seasons,
         calib_season=calib,
+        recency_decay=recency_decay,
     )
 
 
@@ -326,8 +387,8 @@ def _eligible_team_ids(which: str, season: int) -> list[int]:
     return sorted(teams["TeamID"].unique().tolist())
 
 
-def _season_features_by_team(which: str, season: int) -> pd.DataFrame:
-    f = _season_feature_snapshot(which, season)
+def _season_features_by_team(which: str, season: int, recency_decay: float = 0.99) -> pd.DataFrame:
+    f = _season_feature_snapshot(which, season, recency_decay=recency_decay)
     if f.empty:
         reg = read_data("RegularSeasonDetailedResults", which)
         avail = sorted(reg["Season"].unique().tolist())
@@ -335,7 +396,7 @@ def _season_features_by_team(which: str, season: int) -> pd.DataFrame:
         if fallback is None:
             raise Exception(f"No regular season feature data found for {which} (requested season {season})")
         print(f"[{which}] WARNING: no regular-season data for {season}; using {fallback} features instead")
-        f = _season_feature_snapshot(which, fallback)
+        f = _season_feature_snapshot(which, fallback, recency_decay=recency_decay)
     f = f.set_index("TeamID")
     return f
 
@@ -353,7 +414,7 @@ def _pairwise_feature_diff(feature_df: pd.DataFrame, feature_cols_raw: list[str]
 
 def generate_global_predictions_csv(which: str, bundle: ModelBundle, season: int, out_path: str) -> None:
     team_ids = _eligible_team_ids(which, season)
-    feats = _season_features_by_team(which, season)
+    feats = _season_features_by_team(which, season, recency_decay=bundle.recency_decay)
 
     # Ensure all teams exist in feature snapshot (fill missing teams with zeros)
     feats = feats.reindex(team_ids).fillna(0.0)

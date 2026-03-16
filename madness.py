@@ -261,7 +261,7 @@ class Bracket:
             (WEST, 4): "Arkansas",
             (WEST, 13): "Hawai'i",
             (WEST, 6): "BYU",
-            (WEST, 11): None,  # play-in: SMU vs Miami OH
+            (WEST, 11): None,  # play-in: TEX/NCSU
             (WEST, 3): "Gonzaga",
             (WEST, 14): "Kennesaw St",
             (WEST, 7): "Miami",
@@ -270,7 +270,7 @@ class Bracket:
             (WEST, 15): "Queens",
             # SOUTH
             (SOUTH, 1): "Florida",
-            (SOUTH, 16): None,  # play-in: Lehigh vs Prairie View
+            (SOUTH, 16): None,  # play-in: PV/LEH
             (SOUTH, 8): "Clemson",
             (SOUTH, 9): "Iowa",
             (SOUTH, 5): "Vanderbilt",
@@ -287,7 +287,7 @@ class Bracket:
             (SOUTH, 15): "Idaho",
             # MIDWEST
             (MIDWEST, 1): "Michigan",
-            (MIDWEST, 16): None,  # play-in: Howard vs UMBC
+            (MIDWEST, 16): None,  # play-in: UMBC/HOW
             (MIDWEST, 8): "Georgia",
             (MIDWEST, 9): "Saint Louis",
             (MIDWEST, 5): "Texas Tech",
@@ -295,7 +295,7 @@ class Bracket:
             (MIDWEST, 4): "Alabama",
             (MIDWEST, 13): "Hofstra",
             (MIDWEST, 6): "Tennessee",
-            (MIDWEST, 11): None,  # play-in: NC State vs Texas
+            (MIDWEST, 11): None,  # play-in: M-OH/SMU
             (MIDWEST, 3): "Virginia",
             (MIDWEST, 14): "Wright St",
             (MIDWEST, 7): "Kentucky",
