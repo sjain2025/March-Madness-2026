@@ -6,6 +6,7 @@ This project builds win-probability predictions for NCAA Division I tournament m
 
 === Men's 2026 Regular Bracket ===
 
+```
 ___Duke___                                                                                                                          _Arizona__
           |___Duke___                                                                                                    _Arizona__|          
 __Siena___|          |                                                                                                  |          |LIU Brookl
@@ -148,6 +149,7 @@ F Dickinso|                                                                     
                                                   Play-in game Z16: Missouri St vs SF Austin
 
 Women's tiebreaker (predicted total points in championship): 135
+```
 
 ---
 
