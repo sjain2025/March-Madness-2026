@@ -419,9 +419,15 @@ def train_time_series_gb(
 
 def _eligible_team_ids(which: str, season: int) -> list[int]:
     teams = read_data("Teams", which)
-    # Competition submission expects "all Division I teams" for that year.
-    # This dataset already contains only D1 teams, so use all team IDs present.
-    return sorted(teams["TeamID"].unique().tolist())
+    # Restrict to teams that are active Division I participants in the
+    # requested season, based on FirstD1Season / LastD1Season.
+    if "FirstD1Season" in teams.columns and "LastD1Season" in teams.columns:
+        active = teams[
+            (teams["FirstD1Season"] <= season) & (teams["LastD1Season"] >= season)
+        ]
+    else:
+        active = teams
+    return sorted(active["TeamID"].unique().tolist())
 
 
 def _season_features_by_team(which: str, season: int, recency_decay: float = 0.99) -> pd.DataFrame:

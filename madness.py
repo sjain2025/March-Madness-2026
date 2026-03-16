@@ -525,7 +525,7 @@ class Bracket:
                 
     def next_region(self, cur_region, cur_round):
         return (cur_region if cur_round < 5 else 
-                'W' if cur_round == 6 or cur_region in ['W', 'X'] else 'Y')
+                'W' if cur_round == 6 or cur_region in ['W', 'Y'] else 'Y')
 
     def get_predicted(self, region, round, slot):
         return self.get_cell_column(region, round, slot, 'pred')
@@ -601,9 +601,10 @@ class Bracket:
                                              self.get_predicted(region, round, slot+1), predictions)
                     self.set_predicted(region, round+1, (slot+1)//2, winner)
         # Finally do the semis and championship
+        # Semifinals: East vs South, West vs Midwest
         self.set_predicted('W', 6, 1, self.get_winner(self.get_predicted('W', 5, 1),
-                                                      self.get_predicted('X', 5, 1), predictions)) 
-        self.set_predicted('Y', 6, 1, self.get_winner(self.get_predicted('Y', 5, 1), 
+                                                      self.get_predicted('Y', 5, 1), predictions))
+        self.set_predicted('Y', 6, 1, self.get_winner(self.get_predicted('X', 5, 1),
                                                       self.get_predicted('Z', 5, 1), predictions))
         self.set_predicted('W', 7, 1, self.get_winner(self.get_predicted('W', 6, 1),
                                                       self.get_predicted('Y', 6, 1), predictions))
@@ -674,6 +675,47 @@ class Bracket:
         print("Current score: %d; Max possible: %d" %(current, max))
         return current, max
     
+    def _team_scoring_profile(self, team_id):
+        """
+        Simple season-level scoring profile for one team, based on 2026
+        regular-season games: average points scored and allowed.
+        """
+        results = read_data("RegularSeasonDetailedResults", self.which)
+        results = results[results["Season"] == self.season]
+        if results.empty:
+            return None
+        w = results[results["WTeamID"] == team_id][["WScore", "LScore"]]
+        l = results[results["LTeamID"] == team_id][["LScore", "WScore"]]
+        w = w.rename(columns={"WScore": "For", "LScore": "Against"})
+        l = l.rename(columns={"LScore": "For", "WScore": "Against"})
+        all_games = pd.concat([w, l], ignore_index=True)
+        if all_games.empty:
+            return None
+        return {
+            "for": all_games["For"].mean(),
+            "against": all_games["Against"].mean(),
+        }
+
+    def estimate_championship_total_points(self):
+        """
+        Use regular-season scoring profiles for the two predicted finalists
+        to estimate a total points tiebreaker for the championship game.
+        """
+        # Finalists are winners of the two semifinals:
+        t1 = self.get_predicted("W", 6, 1)
+        t2 = self.get_predicted("Y", 6, 1)
+        if t1 is None or t2 is None:
+            return None
+        p1 = self._team_scoring_profile(t1)
+        p2 = self._team_scoring_profile(t2)
+        if p1 is None or p2 is None:
+            return None
+        # Symmetric expectation: each team scores average of its own offense
+        # and opponent's defense; sum gives expected total.
+        exp_t1 = 0.5 * (p1["for"] + p2["against"])
+        exp_t2 = 0.5 * (p2["for"] + p1["against"])
+        return int(round(exp_t1 + exp_t2))
+    
 class ProgressiveBracket(Bracket):
     predictions = None
 
@@ -684,7 +726,8 @@ class ProgressiveBracket(Bracket):
         if round < 5:
             return region, slot + (+1 if slot%2 == 1 else -1)
         elif round == 5:
-            return {'W': 'X', 'X': 'W', 'Y': 'Z', 'Z': 'Y'}[region], 1
+            # Semifinal cross-over matches: East vs South, West vs Midwest
+            return {'W': 'Y', 'Y': 'W', 'X': 'Z', 'Z': 'X'}[region], 1
         else:
             return {'W': 'Y', 'Y': 'W'}[region], 1
 
@@ -736,3 +779,6 @@ if __name__ == "__main__":
         b.seed()
         b.fill()
         b.show()
+        tb = b.estimate_championship_total_points()
+        if tb is not None:
+            print(f"\n{label} tiebreaker (predicted total points in championship): {tb}\n")
