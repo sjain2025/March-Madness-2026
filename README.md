@@ -4,7 +4,7 @@
 
 This project builds win-probability predictions for NCAA Division I tournament matchups using recency-weighted regular-season features, a **HistGradientBoostingClassifier**, and **IsotonicRegression** calibration. It writes prediction CSVs for every possible matchup, then uses **madness.py** to fill and print the 2026 men’s and women’s 68-team brackets.
 
-=== Men's 2026 Regular Bracket ===
+**Men's 2026 Regular Bracket:**
 
 ```
 ___Duke___                                                                                                                          _Arizona__
@@ -76,10 +76,10 @@ __Idaho___|                                                                     
                                                   Play-in game Z16: Howard vs UMBC
 
 Men's tiebreaker (predicted total points in championship): 140
+```
 
-
-=== Women's 2026 Regular Bracket ===
-
+**Women's 2026 Regular Bracket:**
+```
 Connecticu                                                                                                                          ___UCLA___
           |Connecticu                                                                                                    ___UCLA___|          
 UT San Ant|          |                                                                                                  |          |Cal Baptis
